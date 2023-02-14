@@ -1,0 +1,616 @@
+---
+title: "Team 4 GBUS739 Project"
+author: "Sai Jaswanth Kumar Kunku,Ravi Teja Adabala,Vaishnavi Putcha,Abhishek Godavarthi"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  html_document: default
+  word_document: default
+---
+
+
+#Library
+```{r,warning=FALSE,message=FALSE}
+library(tidyverse)
+library(dplyr)
+library(skimr)
+library(psych)
+library(tidymodels)
+library(vip)
+library(discrim)
+library(neuralnet)
+library(nnet)
+library(fastDummies)
+library(rpart)
+library(rpart.plot)
+library(adabag)
+library(ggpubr)
+library(ROCR)
+library(pROC)
+library(randomForest)
+library(caret)
+library(skimr)
+library(e1071)
+library(rsample)
+library(tm)
+library(wordcloud2)
+library(lsa)
+df=read.csv("zomato.csv")
+skim(df)
+```
+
+## Data Preprocessing(Renaming,dropping and adding columns)
+
+```{r,warning=FALSE}
+
+df<- df %>% select(-c("url","phone","address","location","menu_item"))
+
+df <- df %>% rename(meal_type=listed_in.type.,
+                    locality=listed_in.city.,
+                    cost_for_two=approx_cost.for.two.people.,
+                    table_booking=book_table,
+                    rating=rate)
+
+#New columns
+df$total_cuisnes <- str_count(df$cuisines, ",")+1
+df$total_dishes_liked <- str_count(df$dish_liked, ",")+1
+df$total_reviews <- str_count(df$reviews_list, "\\)")+1
+
+#df<- df %>% select(-c("reviews_list"))
+#df$index <- 1:nrow(df)
+
+#Converting characters to numerical
+df$rating<-sub("\\/.*", "", df$rating)
+df$rating <-as.numeric(df$rating)
+df$votes <-as.numeric(df$votes)
+df$cost_for_two <-as.numeric(df$cost_for_two)
+df$total_cuisnes <-as.numeric(df$total_cuisnes)
+df$total_dishes_liked <-as.numeric(df$total_dishes_liked)
+#df$rest_type<-as.factor(df$rest_type)
+df$online_order<-as.factor(df$online_order)
+df$table_booking<-as.factor(df$table_booking)
+df$meal_type<-as.factor(df$meal_type)
+df$locality<-as.factor(df$locality)
+df$rest_type<-as.factor(df$rest_type)
+
+#df$menu<-str_replace_all(df$menu, "[^[:alnum:]]", " ")
+```
+
+```{r,warning=FALSE}
+skim(df)
+```
+
+## Data Cleaning
+```{r,warning=FALSE}
+#Cleaning the list data
+#df$menu_item<-rm_between(df$menu_item, "[", "]", extract=TRUE)
+
+#Merging cities falling under same name
+df<- df %>%mutate(locality = recode(locality, 'Koramangala 4th Block' = 'Koramangala', 'Koramangala 5th Block' = 'Koramangala', 'Koramangala 6th Block' = 'Koramangala','Koramangala 7th Block'='Koramangala'))
+
+#get 1st element from rest_type
+df=df %>% separate(rest_type, c("rest_type",NA),sep=",")
+df<-df %>% filter(rest_type!="")
+unique(df$rest_type)
+
+#Finding duplicates
+sum(duplicated(df))
+df<-unique(df)
+
+#Removing NA values 
+df<-subset(df, !is.na(cuisines))
+df<-subset(df, !is.na(rest_type))
+#removing whitespaces
+df<-df %>%  mutate(across(where(is.character), str_trim))
+#Filling NA values
+df <- df %>% group_by(locality) %>% mutate(rating =replace_na(rating, median(rating, na.rm = TRUE))) %>% as.data.frame() 
+df <- df %>% group_by(locality) %>% mutate(cost_for_two =replace_na(cost_for_two, median(cost_for_two, na.rm = TRUE))) %>% as.data.frame()
+
+```
+
+
+## Finding outliers
+
+```{r,fig.height=3,fig.width=5}
+numeric_df<-Filter(is.numeric,df)
+#EDA
+boxrep = par(mfrow = c(2,3))
+for ( i in 1:ncol(numeric_df) ) {
+  boxplot(numeric_df[[i]],col='orange')
+  mtext(names(numeric_df)[i], cex = 0.8, side = 1, line = 2)
+  mtext("BoxPlot of Numeric Features", side = 3, line = -1.5, outer = TRUE)
+}
+
+#Outlier Removal
+outlier1 <- boxplot(numeric_df$rating, plot=FALSE)$out
+outlier2 <- boxplot(numeric_df$votes, plot=FALSE)$out
+outlier3 <- boxplot(numeric_df$cost_for_two, plot=FALSE)$out
+outlier4 <- boxplot(numeric_df$total_cuisnes, plot=FALSE)$out
+outlier5 <- boxplot(numeric_df$total_reviews, plot=FALSE)$out
+#outlier5 <- boxplot(numeric_df$total_dishes_liked, plot=FALSE)$out
+```
+
+## Outlier Removal
+```{r}
+numeric_df<- as.data.frame(numeric_df[-which(numeric_df$rating %in% outlier1),])
+numeric_df<- as.data.frame(numeric_df[-which(numeric_df$votes %in% outlier2),])
+numeric_df<- as.data.frame(numeric_df[-which(numeric_df$cost_for_two %in% outlier3),])
+numeric_df<- as.data.frame(numeric_df[-which(numeric_df$total_cuisnes %in% outlier4),])
+numeric_df<- as.data.frame(numeric_df[-which(numeric_df$total_reviews %in% outlier5),])
+#numeric_df<- as.data.frame(numeric_df[-which(numeric_df$total_dishes_liked %in% outlier5),])
+
+boxrep = par(mfrow = c(2,3))
+for ( i in 1:ncol(numeric_df) ) {
+  boxplot(numeric_df[[i]],col='orange')
+  mtext(names(numeric_df)[i], cex = 0.8, side = 1, line = 2)
+  mtext("BoxPlot of Numeric Features", side = 3, line = -1.5, outer = TRUE)
+}
+```
+
+## Correlations
+```{r}
+pairs.panels(numeric_df)
+```
+
+#Univariate Analysis for Caterogical Variables
+```{r}
+gg1=df %>% group_by(online_order) %>% summarise(count=n()) %>% ggplot()+geom_bar(aes(x=online_order,y=count),stat="identity",fill='steelblue')+xlab("Online order")+ylab("Count")+theme(plot.title = element_text(hjust = 0.5))
+gg2=df %>% group_by(table_booking) %>% summarise(count=n()) %>% ggplot()+geom_bar(aes(x=table_booking,y=count),stat="identity",fill='steelblue')+xlab("Table booking")+ylab("Count")+theme(plot.title = element_text(hjust = 0.5))
+
+fig1=ggarrange(gg1, gg2,
+          ncol = 2, nrow = 1)
+annotate_figure(fig1,top = text_grob("Distribution of restaurants with online order and table booking capabilities",face = "bold", size = 12))
+```
+
+#Univariate Analysis for Numerical Variables
+```{r,fig.width=8,fig.height=8}
+
+#Ratings count
+g1=ggplot(df,aes(x = rating))+geom_histogram(bins =30,color='lightblue',fill='steelblue')+xlab("Rating out of 5")+ylab("Count")+ggtitle("Ratings Distribution")+scale_x_continuous(n.breaks =15)+geom_vline(xintercept = mean(df$rating),# Add line for mean
+             col = "red",lty=2)
+
+#Votes count
+g2=ggplot(df,aes(x = votes))+geom_histogram(bins =30,color='lightblue',fill='steelblue')+xlab("Votes")+ylab("Count")+ggtitle("Votes Distribution")+scale_x_continuous(n.breaks =15)+geom_vline(xintercept = mean(df$votes),# Add line for mean
+             col = "red",lty=2)
+
+#Cost for two count
+g3=ggplot(df,aes(x = cost_for_two))+geom_histogram(bins =10,color='lightblue',fill='steelblue')+xlab("Cost for two")+ylab("Count")+ggtitle("Cost for two Distribution")+scale_x_continuous(n.breaks =15)+geom_vline(xintercept = mean(df$cost_for_two),# Add line for mean
+             col = "red",lty=2)
+
+fig1=ggarrange(g1,g2,g3,
+          ncol = 1, nrow = 3)
+
+annotate_figure(fig1,top = text_grob("Distribution of Numerical Features",face = "bold", size = 20))
+
+```
+
+
+## How the cost of food varies by locality and meal type?
+```{r,fig.width=10}
+
+ ggplot(df,aes(x=reorder(locality, -cost_for_two, FUN = median),
+                         y=cost_for_two,
+                         fill=locality)) +
+geom_boxplot()+ stat_summary(fun=mean, colour="black", geom="point",shape=16, 
+                             size=1, show.legend=FALSE) + 
+  labs(title = "Cost of food vs Locality",
+        y = "Cost",
+        x = "Locality")+theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r}
+
+ggplot(df,aes(x=reorder(meal_type, -cost_for_two, FUN = median),y=cost_for_two,fill=meal_type)) +
+geom_boxplot()+ stat_summary(fun=mean, colour="black", geom="point",shape=16, 
+                             size=1, show.legend=FALSE) + 
+  labs(title = "Cost of food vs Meal type",
+        y = "Cost",
+        x = "Meal type")+theme(axis.text.x = element_text(angle = 90))
+```
+
+## Rating vs Locality
+```{r,fig.width=10}
+#Removal of Outliers
+  x<-df
+  outliers <- boxplot(x$rating, plot=FALSE)$out
+  x<- as.data.frame(x[-which(x$rating %in% outliers),])
+  
+ggplot(x,aes(x=reorder(locality, -rating, FUN = median),
+                         y=rating,
+                         fill=locality)) +
+geom_boxplot()+ stat_summary(fun=mean, colour="black", geom="point",shape=16, 
+                             size=1, show.legend=FALSE) + 
+  labs(title = "Rating vs Locality",
+        y = "Rating",
+        x = "Locality")+theme(axis.text.x = element_text(angle = 90))
+```
+## Rating to Meal Type
+```{r}
+ggplot(df,aes(x=meal_type,y=rating,fill=meal_type)) +
+geom_boxplot()+ stat_summary(fun=mean, colour="black", geom="point",shape=16,
+                             size=1, show.legend=FALSE) +
+  labs(title = "Rating vs Meal-type",
+        y = "Rating",
+        x = "Meal-type")+theme(axis.text.x = element_text(angle = 90))
+```
+
+## Which localities have highest online orders
+```{r}
+
+ggplot(df, aes(locality, fill = online_order)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent)+
+scale_fill_discrete(breaks=c('Yes', 'No'))+
+  labs(title = "Online order vs locality",
+        y = "Online order",
+        x = "locality")+theme(axis.text.x = element_text(angle = 90))
+```
+#Which cuisines are most preferred by Banglore people
+
+```{r}
+cusines_city<-df %>% select(locality,cuisines) %>% 
+    mutate(cuisines = strsplit(as.character(cuisines), ",")) %>% 
+    unnest(cuisines)
+  
+ cusines_city$cuisines<-str_trim(cusines_city$cuisines)
+
+cusines_city<- cusines_city %>% group_by(cuisines) %>% summarise(count=n()) %>%  arrange(desc(count))
+
+cusines_city <- cusines_city[with(cusines_city,order(-count)),]
+cusines_city <- cusines_city[1:10,]
+
+ggplot(data=cusines_city, aes(x=reorder(cuisines,-count), y=count)) +
+  geom_bar(stat="identity", width=0.5,fill="steelblue")+
+  labs(title = "Top 10 cuisines in the city",
+        y = "Count",
+        x = "Cuisine")+theme(axis.text.x = element_text(angle = 90))
+```
+
+## Which location has highest no of restaurants
+```{r}
+restaunts_count<-df %>% group_by(locality) %>% summarise(count=n())
+  
+ggplot(restaunts_count,aes(x=reorder(locality,count),y=count,fill=locality))+
+geom_bar(stat = "identity",color="black")+
+labs(x="Location",y="No: of restaraunts",
+     title="Total Restauarants by locality")+coord_flip()+theme(legend.position = "none")
+```
+## What are the most popular food preferences in the city
+```{r}
+dishes_list<-df %>% select(locality,dish_liked) %>% 
+    mutate(dish_liked = strsplit(as.character(dish_liked), ",")) %>% 
+    unnest(dish_liked)
+  
+ dishes_list$dish_liked<-str_trim(dishes_list$dish_liked)
+
+dishes_list<- dishes_list %>% group_by(dish_liked) %>% summarise(count=n()) %>%  arrange(desc(count))
+
+dishes_list <- dishes_list[with(dishes_list,order(-count)),]
+dishes_list <- dishes_list[1:20,]
+
+ggplot(data=dishes_list, aes(x=reorder(dish_liked,-count), y=count)) +
+  geom_bar(stat="identity", width=0.5,fill="steelblue")+
+  labs(title = "Top 20 liked dishes in the city",
+        y = "Count",
+        x = "Dish Name")+theme(axis.text.x = element_text(angle = 90))
+```
+```{r}
+
+model_df<-df %>% select(online_order,table_booking,meal_type,total_cuisnes,total_dishes_liked,cost_for_two,votes,rating,
+                        total_reviews)
+skim(model_df)
+
+```
+
+## Linear regression with only numerical variables
+```{r}
+set.seed(314)
+zomato_split <- initial_split(numeric_df, prop = 0.60, strata = cost_for_two)
+zomato_training <- zomato_split %>%  training()
+zomato_test <- zomato_split %>% testing()
+
+## Step 2. Feature Engineering
+zomato_recipe <- recipe(cost_for_two ~ ., data = zomato_training)
+
+## Step 3. Specify a Model
+lm_model <- linear_reg() %>% set_engine('lm') %>% set_mode('regression')
+
+# View object properties
+lm_model
+
+lm_sum = lm(cost_for_two ~ ., data = zomato_training) #Create a linear regression with two variables
+summary(lm_sum)
+
+## Step 4. Create a Workflow
+zomato_workflow <- workflow() %>% add_model(lm_model) %>% add_recipe(zomato_recipe)
+
+
+## Step 5. Execute the Workflow
+zomato_fit <- zomato_workflow %>% last_fit(split = zomato_split)
+
+# Obtain performance metrics on test data
+zomato_fit %>% collect_metrics()
+```
+
+## Linear regression with numerical and categorical variables along with Feature Engineering
+
+```{r}
+set.seed(314)
+zomato_split <- initial_split(model_df, prop = 0.60, strata = cost_for_two)
+zomato_training <- zomato_split %>%  training()
+zomato_test <- zomato_split %>% testing()
+
+## Step 2. Feature Engineering
+zomato_recipe <- recipe(cost_for_two ~ ., data = zomato_training) %>% 
+                step_YeoJohnson(all_numeric(), -all_outcomes()) %>% 
+                step_normalize(all_numeric(), -all_outcomes()) %>% 
+                step_dummy(all_nominal(), - all_outcomes())
+
+## Step 3. Specify a Model
+lm_model <- linear_reg() %>% set_engine('lm') %>% set_mode('regression')
+
+lm_sum2 = lm(cost_for_two ~ ., data = zomato_training) #Create a linear regression with two variables
+summary(lm_sum2)
+
+## Step 4. Create a Workflow
+zomato_workflow <- workflow() %>% add_model(lm_model) %>% add_recipe(zomato_recipe)
+
+
+## Step 5. Execute the Workflow
+zomato_fit <- zomato_workflow %>% last_fit(split = zomato_split)
+
+# Obtain performance metrics on test data
+zomato_fit %>% collect_metrics()
+```
+## Neural Network
+```{r,warning=FALSE}
+zomato_training <- dummy_cols(zomato_training, select_columns = c('online_order','rest_type','meal_type','locality','table_booking'), remove_selected_columns = TRUE)
+zomato_test <- dummy_cols(zomato_test, select_columns = c('online_order','rest_type','meal_type','locality','table_booking'), remove_selected_columns = TRUE)
+
+my_metrics <-metric_set(accuracy, sens, spec, f_meas, roc_auc)
+
+zomato_training_params <- preProcess(zomato_training, method=c("range"))
+zomato_training_normalized <- predict(zomato_training_params, zomato_training)
+zomato_test_params <- preProcess(zomato_test, method=c("range"))
+zomato_test_normalized <- predict(zomato_test_params, zomato_test)
+
+names(zomato_training_normalized) <- make.names(names(zomato_training))
+names(zomato_test_normalized) <- make.names(names(zomato_test))
+
+## single hidden layer Neural Network with 1 nodes
+set.seed(10)
+nn1 <- neuralnet(cost_for_two~ ., data = zomato_training_normalized,linear.output = F,hidden = 1)
+plot(nn1,rep="best")
+
+test_pred <- neuralnet::compute(nn1, zomato_test_normalized)$net.result
+
+rsq <- function (x, y) cor(x, y) ^ 2
+r2<-rsq(zomato_test_normalized$cost_for_two, test_pred)
+rmse<-sqrt(mean((zomato_test_normalized$cost_for_two-test_pred)^2))
+
+print(paste("RMSE:",round(rmse,3),"R2:",round(r2,3)))
+```
+
+## Classification:Factoring the target Variable & Data Splitting
+```{r}
+
+model_df <- model_df %>% 
+  mutate(rating = case_when(
+    rating>=3.5 ~ "High",
+    TRUE ~ "Low"))
+
+model_df$rating<-factor(model_df$rating)
+
+set.seed(1)
+#Test/Train Split
+zomato_split <- initial_split(model_df, prop = 0.70,strata = rating)
+zomato_training <- zomato_split %>% training()
+zomato_test <- zomato_split %>% testing()
+
+zomato_recipe <- recipe(rating ~ ., data = zomato_training) %>% 
+                   step_YeoJohnson(all_numeric(), -all_outcomes()) %>% 
+                   step_normalize(all_numeric(), -all_outcomes()) %>% 
+                   step_dummy(all_nominal(), -all_outcomes())
+
+zomato_recipe %>% 
+  prep(training = zomato_training) %>% 
+  bake(new_data = NULL)
+
+zomato_folds <- vfold_cv(zomato_training, v = 5)
+
+#Metrics
+my_metrics <-metric_set(accuracy, sens, spec, f_meas, roc_auc)
+```
+
+## Model 1:Logistic Regression
+```{r}
+#Model Spec
+logistic_model <- logistic_reg() %>% 
+                  set_engine('glm') %>% 
+                  set_mode('classification')
+
+zomato_wf <- workflow() %>% 
+            add_model(logistic_model) %>% 
+            add_recipe(zomato_recipe)
+
+zomato_logistic_fit <- zomato_wf %>% fit(data = zomato_training)
+
+zomato_trained_model <- zomato_logistic_fit %>% extract_fit_parsnip()
+
+vip(zomato_trained_model)
+
+last_fit_model <- zomato_wf %>% last_fit(split = zomato_split,metrics = my_metrics)
+
+metrics<-last_fit_model %>% collect_metrics()
+
+metrics
+
+last_fit_results <- last_fit_model %>%  collect_predictions()
+
+last_fit_results
+
+last_fit_results %>% 
+  roc_curve(truth = rating, estimate = .pred_High) %>% 
+  autoplot()
+
+conf_mat(last_fit_results, truth = rating, estimate = .pred_class)
+```
+
+## Model 2:Decision tree
+```{r,warning=FALSE}
+# classification tree
+fullygrown_ct <- rpart(rating ~ ., data = zomato_training, method = "class",control = rpart.control(cp = 0,maxdepth = 5,minsplit = 1))
+## Pruned Decision tree
+mincp <- fullygrown_ct$cptable[which.min(fullygrown_ct$cptable[,"xerror"]),"CP"]
+# Prune the tree with optimal cp
+pruned_ct <- prune(fullygrown_ct, cp = mincp )
+pruned_ct_point_pred_train <- predict(pruned_ct,zomato_test,type = "class")
+
+prp(pruned_ct, type = 1, extra = 1, under = TRUE, split.font = 1, varlen = 0)
+
+# generate confusion matrix
+confusionMatrix(pruned_ct_point_pred_train, as.factor(zomato_test$rating))
+
+## Pruned Decision tree-AUC ROC
+tree.preds <- predict(pruned_ct, zomato_test, type="prob")[, 2]
+tree.roc <- roc(zomato_test$rating, tree.preds)
+print(tree.roc)
+plot(tree.roc,main="Decision tree-AUC ROC")
+```
+
+## Model 3 :Random Forest
+```{r,warning=FALSE}
+rf_model <- rand_forest(mtry = 3,
+                        trees = 300,
+                        min_n = 8) %>% 
+            set_engine('ranger', importance = "impurity") %>% 
+            set_mode('classification')
+
+rf_workflow <- workflow() %>% 
+               add_model(rf_model) %>% 
+               add_recipe(zomato_recipe)
+
+set.seed(10)
+
+rf_grid <- grid_random(mtry() %>% range_set(c(2, round(sqrt(ncol(zomato_training))))),
+                       trees(),
+                       min_n(),
+                       size = 3)
+
+set.seed(10)
+
+rf_tuning <- rf_workflow %>%  tune_grid(resamples = zomato_folds,rid = rf_grid)
+
+best_rf <- rf_tuning %>% select_best(metric = 'roc_auc')
+final_rf_workflow <- rf_workflow %>% finalize_workflow(best_rf)
+rf_last_fit <- final_rf_workflow %>% last_fit(split = zomato_split,metrics=my_metrics)
+zomato_rf_fit <- final_rf_workflow %>% fit(data = zomato_training)
+
+rf_trained_model <- zomato_rf_fit %>% extract_fit_parsnip()
+
+vip(rf_trained_model)
+
+metrics<-rf_last_fit %>% collect_metrics()
+metrics
+
+rf_last_fit %>% collect_predictions() %>% roc_curve(truth = rating, estimate = .pred_High) %>% autoplot()
+rf_last_fit %>% collect_predictions() %>% conf_mat(truth = rating, estimate = .pred_class)
+```
+
+## Model 4:Text Mining
+```{r}
+data <- read.csv("zomato.csv")
+data$label <- ifelse(data$rate>3,1,-1)
+data$total_reviews <- str_count(data$reviews_list, "\\)")+1
+data <- data %>% filter(total_reviews >1 & total_reviews <5)
+data <- data %>% select(reviews_list,label)
+corpus <- Corpus(VectorSource(data$reviews_list))
+data %>% group_by(label) %>%summarise(count = n())
+```
+
+```{r,warning=FALSE}
+corpus <- corpus %>%
+  tm_map(content_transformer(tolower)) %>% 
+  tm_map(stripWhitespace) %>% 
+  tm_map(removePunctuation) %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removeWords, stopwords("english")) %>% 
+  tm_map(stemDocument)
+
+corpus <- tm_map(corpus, removeWords, c("rate","ratedn"))
+
+```
+
+```{r}
+find_freq_terms_fun <- function(corpus_in){
+doc_term_mat <- TermDocumentMatrix(corpus_in)
+freq_terms <- findFreqTerms(doc_term_mat)[1:max(doc_term_mat$nrow)]
+terms_grouped <- doc_term_mat[freq_terms,] %>%
+    as.matrix() %>%
+    rowSums() %>%
+    data.frame(Term=freq_terms, Frequency = .) %>%
+    arrange(desc(Frequency)) %>%
+    mutate(prop_term_to_total_terms=Frequency/nrow(.))
+return(data.frame(terms_grouped))
+}
+```
+## Visualizing Most Frequent Words
+```{r}
+positive_freq_terms <- data.frame(find_freq_terms_fun(corpus))
+head(positive_freq_terms,5)
+wordcloud2(positive_freq_terms[,1:2], shape="circle",color="random-dark")
+```
+
+# Perform TF-IDF and latent semantic analysis
+```{r,warning=FALSE}
+ads_tdm <- TermDocumentMatrix(corpus)
+review_dtm <- removeSparseTerms(ads_tdm,0.99)
+ads_tfidf <- weightTfIdf(review_dtm)
+```
+
+# Produce a concept matrix
+```{r,warning=FALSE}
+ads_lsa_tfidf <- lsa(ads_tfidf, dim =20)
+```
+# convert to data frame
+```{r}
+Ads_words_df <- as.data.frame(as.matrix(ads_lsa_tfidf$dk)) 
+dim(Ads_words_df)
+Ads_df_analysis <- data.frame(ifelse(data$label==-1, 0, 1), Ads_words_df)
+names(Ads_df_analysis)[1] <- "label"
+
+```
+
+# Test/Train Split
+```{r}
+set.seed(10)
+ads_split <- initial_split(Ads_df_analysis, prop = 0.60)
+ads_training <- ads_split %>% training()
+ads_valid <- ads_split %>% testing()
+```
+## Logistic Regression
+```{r,warning=FALSE}
+reg <- glm(label ~ ., data = ads_training, family = 'binomial')
+pred <- predict(reg, newdata = ads_valid, type = "response")
+confusionMatrix(table(ifelse(pred>0.5,1,0), ads_valid$label))
+```
+
+## Findings
+From the exploratory data analysis,it can be understood that locality with highest number of restaurants have more online orders with average cost of food.It is also surprising to see that most of the restaurants in the Bangalore area are serving North Indian and Chinese cuisines followed by South Indian cuisines.Based on the output from top foods it is evident that people are preferring fast foods than regular meals.Finally the results from word cloud showed that customers are talking frequently about food,place,order and taste.
+
+When it comes to modeling,we tried to predict cost_for_two by fitting Linear regression with only numerical variables and with both numerical and categorical variables.From the results we interpreted that the simple model is doing better in terms of predicting the cost when compared to model 2.After fitting neural network we noticed that model is over fitting,hence it is not recommended for this data.
+
+To predict the rating of food,we built Decision Tree,Logistic Regression and Random Forest.Among them,Random Forest model yielded great results with an accuracy of 87.6% and roc_auc of 94.5%.The important variables in determining the rating are votes,total dishes liked,total reviews,cost for two and total cuisinesThe reviews in the data were labelled as positive and negative based on rating and text mining is done of the data.The model gave an impressive at classifying the rating with an accuracy of 80.94%.
+
+
+## Recommendations
+
+There are comparatively less restaurants in locality – “New BEL Road” as per Zomato data. Restaurants in this locality can be expanded to appear more frequently in recommendations.
+
+Significantly,there are higher number of restaraunts who are not into online ordering,executives at zomato should try to explain the its importance to them so that it will be helpful in the business development.
+
+Restaurants in “Lavelle Road” has lowest percentage of online orders. So Zomato should concentrate on providing discount or promo codes or offers to those restaurants to grab customer’s attraction. 
+
+People are more inclined towards North Indian and Chinese cuisines so Zomato should give suggestions to their partnered restaurants to include more of those dishes in their menu.
+
